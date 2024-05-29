@@ -45,7 +45,9 @@ class ContrastLoss(nn.Module):
         self.l1 = nn.L1Loss()
         self.weights = [1.0/32, 1.0/16, 1.0/8, 1.0/4, 1.0]
         self.ab = ablation
+        self.triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2, eps=1e-7)
 
+        
     def forward(self, a, p, n):
         a_vgg, p_vgg, n_vgg = self.vgg(a), self.vgg(p), self.vgg(n)
         loss = 0
@@ -58,6 +60,8 @@ class ContrastLoss(nn.Module):
                 contrastive = d_ap / (d_an + 1e-7)
             else:
                 contrastive = d_ap
+            
+            # loss = self.triplet_loss(d_an, d_ap, n_vgg)
 
             loss += self.weights[i] * contrastive
         return loss
