@@ -9,7 +9,7 @@ if __name__ == '__main__':
     ohaze_root = OHAZE_ROOT
     crop_size = 512
 
-    ori_root = os.path.join(ohaze_root, '# O-HAZY NTIRE 2018')
+    ori_root = os.path.join(ohaze_root, '#O-HAZYNTIRE2018')
     ori_haze_root = os.path.join(ori_root, 'hazy')
     ori_gt_root = os.path.join(ori_root, 'GT')
 

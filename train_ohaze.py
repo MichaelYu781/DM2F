@@ -18,15 +18,18 @@ from tools.utils import AvgMeter, check_mkdir, sliding_forward
 
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
+from torch.utils.tensorboard import SummaryWriter
+from lpips import LPIPS
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a DM2FNet')
     parser.add_argument(
-        '--gpus', type=str, default='0', help='gpus to use ')
+        '--gpus', type=str, default='1', help='gpus to use ')
     parser.add_argument('--ckpt-path', default='./ckpt', help='checkpoint path')
     parser.add_argument(
         '--exp-name',
-        default='O-Haze',
+        default='bli',
         help='experiment name.')
     args = parser.parse_args()
 
@@ -76,11 +79,14 @@ def main():
 
     train(net, optimizer)
 
+from loss import ContrastLoss
 
 def train(net, optimizer):
     curr_iter = cfgs['last_iter']
     scaler = amp.GradScaler()
     torch.cuda.empty_cache()
+
+    cts = ContrastLoss()
 
     while curr_iter <= cfgs['iter_num']:
         train_loss_record = AvgMeter()
@@ -103,6 +109,7 @@ def train(net, optimizer):
             optimizer.zero_grad()
 
             with amp.autocast():
+                # import pdb; pdb.set_trace()
                 x_jf, x_j1, x_j2, x_j3, x_j4 = net(haze)
 
                 loss_x_jf = criterion(x_jf, gt)
@@ -111,7 +118,17 @@ def train(net, optimizer):
                 loss_x_j3 = criterion(x_j3, gt)
                 loss_x_j4 = criterion(x_j4, gt)
 
-                loss = loss_x_jf + loss_x_j1 + loss_x_j2 + loss_x_j3 + loss_x_j4
+                loss_vgg7 = cts(x_jf, gt, haze)
+                
+                loss = loss_x_jf + loss_x_j1 + loss_x_j2 + loss_x_j3 + loss_x_j4 + loss_vgg7 * 0.0
+
+            writer.add_scalar('loss/loss_x_jf', loss_x_jf, curr_iter)
+            writer.add_scalar('loss/loss_x_j1', loss_x_j1, curr_iter)
+            writer.add_scalar('loss/loss_x_j2', loss_x_j2, curr_iter)
+            writer.add_scalar('loss/loss_x_j3', loss_x_j3, curr_iter)
+            writer.add_scalar('loss/loss_x_j4', loss_x_j4, curr_iter)
+            writer.add_scalar('loss/loss_vgg7', loss_vgg7, curr_iter)
+
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -158,6 +175,7 @@ def validate(net, curr_iter, optimizer):
             haze, gt, _ = data
             haze, gt = haze.cuda(), gt.cuda()
 
+            # import pdb; pdb.set_trace()
             dehaze = sliding_forward(net, haze)
 
             loss = criterion(dehaze, gt)
@@ -167,10 +185,23 @@ def validate(net, curr_iter, optimizer):
                 r = dehaze[i].cpu().numpy().transpose([1, 2, 0])  # data range [0, 1]
                 g = gt[i].cpu().numpy().transpose([1, 2, 0])
                 psnr = peak_signal_noise_ratio(g, r)
+                
+                # import pdb; pdb.set_trace()
                 ssim = structural_similarity(g, r, data_range=1, multichannel=True,
-                                             gaussian_weights=True, sigma=1.5, use_sample_covariance=False)
+                                             gaussian_weights=True, sigma=1.5, use_sample_covariance=False, channel_axis=2)
                 psnr_record.update(psnr)
                 ssim_record.update(ssim)
+                
+                
+                gg = torch.from_numpy(g).permute(2, 0, 1).unsqueeze(0).float()
+                rr = torch.from_numpy(r).permute(2, 0, 1).unsqueeze(0).float()
+                
+                lpips = lpips_model(gg, rr).squeeze().item()
+                
+                writer.add_scalar('eval/psnr', psnr, curr_iter)
+                writer.add_scalar('eval/ssim', ssim, curr_iter)
+                writer.add_scalar('eval/lpips', lpips, curr_iter)
+
 
     snapshot_name = 'iter_%d_loss_%.5f_lr_%.6f' % (curr_iter + 1, loss_record.avg, optimizer.param_groups[1]['lr'])
     log = '[validate]: [iter {}], [loss {:.5f}] [PSNR {:.4f}] [SSIM {:.4f}]'.format(
@@ -188,9 +219,9 @@ def validate(net, curr_iter, optimizer):
 if __name__ == '__main__':
     args = parse_args()
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
+    # os.environ['CUDA_VISIBLE_DEVICES'] = args.gpus
     cudnn.benchmark = True
-    torch.cuda.set_device(int(args.gpus))
+    # torch.cuda.set_device(int(args.gpus))
 
     train_dataset = OHazeDataset(OHAZE_ROOT, 'train_crop_512')
     train_loader = DataLoader(train_dataset, batch_size=cfgs['train_batch_size'], num_workers=4,
@@ -200,6 +231,8 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=1)
 
     criterion = nn.L1Loss().cuda()
-    log_path = os.path.join(args.ckpt_path, args.exp_name, str(datetime.datetime.now()) + '.txt')
-
+    log_path = os.path.join(args.ckpt_path, args.exp_name, str(datetime.datetime.now()).replace(' ', '-') + '.txt')
+    
+    writer = SummaryWriter(os.path.join(args.ckpt_path, args.exp_name, "logs"))
+    lpips_model = LPIPS(net="alex")
     main()
